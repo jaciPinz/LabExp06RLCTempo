@@ -98,13 +98,14 @@ data <- assignUncertainty(data, type = "volt", scale = 0.5,   col = "volt")
 #' Modello completo di VL(t): include t0 (istante di innesco) e v0 (baseline).
 #'
 #' Per t <= t0 il segnale vale v0; per t > t0 è un oscillatore smorzato.
-modelFull <- function(t, A, omega0, tau, phi, v0, t0) {
-  Omega  <- sqrt(pmax(1e-12, omega0^2 - 1/tau^2))
-  dt     <- t - t0
-  smooth <- 1 / (1 + exp(-50 * dt))   # 50 = ripidezza (regolabile)
-  A * exp(-pmax(0, dt)/tau) *
-    (cos(Omega * pmax(0, dt) + phi) +
-       sin(Omega * pmax(0, dt) + phi) / (Omega * tau)) * smooth + v0
+modelFull <- function(t, A, omega0, tau, v0, t0) {
+  Omega <- sqrt(pmax(1e-12, omega0^2 - 1/tau^2))
+  dt    <- t - t0
+  
+  Vosc <- A * exp(-dt/tau) *
+    (cos(Omega*dt) + sin(Omega*dt)/(Omega*tau))
+  
+  return(Vosc + v0)
 }
 
 #' Modello ridotto di VL(t): usato dopo aver traslato t0->0 e rimosso v0.
@@ -155,68 +156,30 @@ printFitResults <- function(fit, step) {
 #' @return Lista invisibile con fitFull (solo se !fixT0), fitReduced, dataCut.
 fitVL <- function(data,
                   omega0Init = 1, tauInit = 1, AInit = 1,
-                  phiInit = 0,   v0Init  = 0, t0Init = 0,
-                  fixT0 = FALSE) {
+                  v0Init = 0, t0Init = 0) {
   
   nlsControl <- nls.control(maxiter = 500, tol = 1e-8)
   
-  if (!fixT0) {
-    
-    # --- Passo 1: stima t0 e v0 ---
-    fitFull <- nls(
-      volt ~ modelFull(time, A, omega0, tau, phi, v0, t0),
-      data    = data,
-      start   = list(A = AInit, omega0 = omega0Init, tau = tauInit,
-                     phi = phiInit, v0 = v0Init, t0 = t0Init),
-      weights = 1 / data$voltUnc^2,
-      control = nlsControl
-    )
-    
-    t0BF <- coef(fitFull)["t0"]
-    v0BF <- coef(fitFull)["v0"]
-    
-    cat("====== PASSO 1: fit completo ======\n")
-    printFitResults(fitFull, step = 1)
-    
-    # Rimozione baseline e traslazione temporale
-    dataCut       <- data[data$time > t0BF, ]
-    dataCut$volt  <- dataCut$volt - v0BF
-    dataCut$time  <- dataCut$time - t0BF
-    
-    # --- Passo 2: fit ridotto ---
-    fitReduced <- nls(
-      volt ~ modelReduced(time, A, omega0, tau, phi),
-      data    = dataCut,
-      start   = list(A = AInit, omega0 = omega0Init,
-                     tau = tauInit, phi = phiInit),
-      weights = 1 / dataCut$voltUnc^2,
-      control = nlsControl
-    )
-    
-    cat("\n====== PASSO 2: fit ridotto (t > t0, baseline rimossa) ======\n")
-    printFitResults(fitReduced, step = 2)
-    
-    return(invisible(list(fitFull = fitFull, fitReduced = fitReduced, dataCut = dataCut)))
-    
-  } else {
-    
-    # --- Solo fit ridotto (t0 già noto e rimosso) ---
-    fitReduced <- nls(
-      volt ~ modelReduced(time, A, omega0, tau, phi),
-      data    = data,
-      start   = list(A = AInit, omega0 = omega0Init,
-                     tau = tauInit, phi = phiInit),
-      weights = 1 / data$voltUnc^2,
-      control = nlsControl
-    )
-    
-    cat("====== Fit ridotto ======\n")
-    printFitResults(fitReduced, step = 2)
-    
-    return(invisible(list(fitReduced = fitReduced, dataCut = data)))
-  }
+  # --- Fit completo ---
+  fitFull <- nlsLM(
+    volt ~ modelFull(time, A, omega0, tau, v0, t0),
+    data    = data,
+    start   = list(
+      A = AInit,
+      omega0 = omega0Init,
+      tau = tauInit,
+      v0 = v0Init,
+      t0 = t0Init
+    ),
+    weights = 1 / data$voltUnc^2,
+    control = nlsControl
+  )
+  
+  cat("====== Fit completo ======\n")
+  printFitResults(fitFull, step = 2)  # puoi lasciare step=2 per stampare Omega
+  
+  return(invisible(list(fitFull = fitFull)))
 }
-
 
 # ==============================================================================
 # 4. STIMA AUTOMATICA DEI PARAMETRI INIZIALI
@@ -428,8 +391,51 @@ fitResults <- fitVL(
   AInit      = initialGuesses$aInit,
   omega0Init = initialGuesses$omega0Init,
   tauInit    = initialGuesses$tauInit,
-  phiInit    = initialGuesses$phiInit,
   v0Init     = initialGuesses$v0Init,
-  t0Init     = initialGuesses$t0Init,
-  fixT0      = FALSE
+  t0Init     = initialGuesses$t0Init
 )
+
+# ==============================================================================
+# 7. PLOT DIAGNOSTICO CON RESIDUI REALI (VOLT) E BARRE D'ERRORE
+# ==============================================================================
+
+# 1. Recupero parametri
+params <- coef(fitResults$fitFull)
+
+# 2. Calcolo fitValues e residui REALI (non pesati)
+data$fitValues <- modelFull(data$time, params["A"], params["omega0"], 
+                            params["tau"], params["v0"], params["t0"])
+
+# Calcolo differenza semplice in Volt
+data$residReal <- data$volt - data$fitValues 
+
+# 3. Griglia per la curva continua
+tGrid <- seq(min(data$time), max(data$time), length.out = 2000)
+fitDF <- data.frame(time = tGrid, 
+                    volt = modelFull(tGrid, params["A"], params["omega0"], 
+                                     params["tau"], params["v0"], params["t0"]))
+
+# --- PLOT SEGNALE CON BARRE D'ERRORE ---
+p_signal <- ggplot(data, aes(x = time, y = volt)) +
+  geom_errorbar(aes(ymin = volt - voltUnc, ymax = volt + voltUnc), 
+                width = 0, color = "red", alpha = 0.2) +
+  geom_point(color = "red", size = 0.5, alpha = 0.4) +
+  geom_line(data = fitDF, aes(x = time, y = volt), 
+            color = "black", linewidth = 0.8) +
+  geom_point(data = data[initialGuesses$indiciMax, ], color = "blue", size = 2) +
+  geom_point(data = data[initialGuesses$indiciMin, ], color = "green", size = 2) +
+  labs(title = "Transitorio RLC — Fit e Incertezze",
+       x = "Tempo (s)", y = "Tensione (V)") +
+  theme_minimal()
+
+# --- PLOT RESIDUI REALI (In Volt) ---
+p_resid <- ggplot(data, aes(x = time, y = residReal)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+  geom_errorbar(aes(ymin = residReal - voltUnc, ymax = residReal + voltUnc), 
+                width = 0, color = "purple", alpha = 0.2) +
+  geom_point(color = "purple", size = 0.7, alpha = 0.5) +
+  labs(title = "Residui",
+       x = "Tempo (s)", y = "Residui (V)") + # Unità di misura esplicita
+  theme_minimal()
+
+(p_signal / p_resid)
