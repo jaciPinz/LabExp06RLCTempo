@@ -439,3 +439,838 @@ p_resid <- ggplot(data, aes(x = time, y = residReal)) +
   theme_minimal()
 
 (p_signal / p_resid)
+
+# ==============================================================================
+# 8. MAPPATURA MANUALE DEL CHI² — INCERTEZZE SUI PARAMETRI
+# ==============================================================================
+#
+# Strategia (analoga al codice Python di riferimento):
+#
+#   1. Estrai i parametri best fit da fitResults$fitFull e i loro errori
+#      dalla matrice di covarianza (usati solo per definire il range di scansione).
+#
+#   2. Costruisci una griglia 3D di (A, omega0, tau), tenendo v0 e t0 fissi
+#      al best fit. Per ogni punto della griglia calcola il chi².
+#      → mappa3D[iA, iOm, iTau]
+#
+#   3. Profila:
+#        - 1D: per ogni valore di un parametro, prendi il min sugli altri due
+#              (questo è il "profilo likelihood" discretizzato).
+#        - 2D: per ogni coppia, prendi il min sul terzo asse
+#              (usato per le mappe contour).
+#
+#   4. Incertezza 1-sigma su ogni parametro = distanza dal best fit al punto
+#      in cui il profilo 1D raggiunge chi2_min + 1  (Δchi²= 1).
+#
+#   I livelli di riferimento per k parametri di interesse sono:
+#     - Δchi² = 1.00  → 1-sigma per 1 parametro (68.3 %)
+#     - Δchi² = 2.30  → 1-sigma congiunta per 2 parametri (68.3 % in 2D)
+#     - Δchi² = 3.84  → 2-sigma per 1 parametro (95 %)
+#     - Δchi² = 6.18  → 2-sigma congiunta per 2 parametri (95 % in 2D)
+#
+# ==============================================================================
+
+
+# ------------------------------------------------------------------------------
+# 8.1  Estrazione dei parametri best fit e del chi2 minimo
+# ------------------------------------------------------------------------------
+
+params_bf <- coef(fitResults$fitFull)
+errs_bf   <- sqrt(diag(vcov(fitResults$fitFull)))
+
+A_bf   <- params_bf["A"]
+om_bf  <- params_bf["omega0"]
+tau_bf <- params_bf["tau"]
+v0_bf  <- params_bf["v0"]
+t0_bf  <- params_bf["t0"]
+
+# pesi usati nel fit
+w <- 1 / data$voltUnc^2
+
+# chi2 minimo (dal fit NLS)
+chi2_min_fit <- sum(w * residuals(fitResults$fitFull)^2)
+cat(sprintf("chi2_min (NLS)    = %.4f\n", chi2_min_fit))
+cat(sprintf("dof               = %d\n", nrow(data) - length(params_bf)))
+
+
+# ------------------------------------------------------------------------------
+# 8.2  Definizione della griglia di scansione
+# ------------------------------------------------------------------------------
+
+N_SIGMA <- 20L    # ampiezza del range in unità di sigma (da covarianza)
+N_STEP  <- 160L   # punti per asse  (80^3 = 512 000 valutazioni del modello)
+#
+# Aumenta N_STEP per una mappatura più fine, a scapito del tempo di calcolo.
+# Con N_STEP=80 e la funzione vettorizzata sotto, il calcolo richiede ~10–30 s
+# su un laptop moderno.
+
+A_grid   <- seq(A_bf   - N_SIGMA * errs_bf["A"], A_bf   + N_SIGMA * errs_bf["A"], length.out = N_STEP)
+
+om_grid  <- seq(om_bf  - N_SIGMA * errs_bf["omega0"], om_bf  + N_SIGMA * errs_bf["omega0"], length.out = N_STEP)
+
+tau_grid <- seq(tau_bf - N_SIGMA * errs_bf["tau"],
+                tau_bf + N_SIGMA * errs_bf["tau"],
+                length.out = N_STEP)
+
+
+# ------------------------------------------------------------------------------
+# 8.3  Calcolo della mappa chi² 3D
+# ------------------------------------------------------------------------------
+#
+# Per ogni (A, omega0, tau) nella griglia calcola:
+#
+#   chi2(A, omega0, tau) = sum_i  [ (V_i - V_fit(t_i)) / sigma_i ]^2
+#
+# con v0 e t0 fissati al best fit.
+#
+# Implementazione vettorizzata tramite outer product implicito:
+#   - pre-calcola il modello su (N_STEP × N_dati) matrici
+#   - sfrutta il riciclo di R per evitare loop espliciti
+#
+# NOTA: v0 e t0 sono fissati perché la profilazione completa su 5 parametri
+# richiederebbe 80^5 ≈ 3×10^9 valutazioni. Una scansione 3D (come nel codice
+# Python allegato) è il compromesso standard per esperimenti didattici.
+
+cat("Calcolo mappa chi2 3D in corso...\n")
+t_start <- proc.time()
+
+# Tensioni osservate e pesi come vettori (evita accesso ripetuto al data.frame)
+V_obs   <- data$volt
+t_obs   <- data$time
+sigma_i <- data$voltUnc
+
+# Funzione chi2 per singolo punto della griglia (v0, t0 fissi)
+chi2_point <- function(A, omega0, tau) {
+  Omega  <- sqrt(max(1e-20, omega0^2 - 1 / tau^2))
+  dt     <- t_obs - t0_bf
+  V_fit  <- A * exp(-dt / tau) *
+    (cos(Omega * dt) + sin(Omega * dt) / (Omega * tau)) + v0_bf
+  sum(((V_obs - V_fit) / sigma_i)^2)
+}
+
+# Costruisce la griglia come indici e chiama chi2_point su ogni riga
+grid_idx <- expand.grid(iA   = seq_len(N_STEP),
+                        iOm  = seq_len(N_STEP),
+                        iTau = seq_len(N_STEP))
+
+chi2_vec <- mapply(
+  function(iA, iOm, iTau)
+    chi2_point(A_grid[iA], om_grid[iOm], tau_grid[iTau]),
+  grid_idx$iA,
+  grid_idx$iOm,
+  grid_idx$iTau
+)
+
+# Riorganizza in array 3D: dimensione [iA, iOm, iTau]
+mappa3D <- array(chi2_vec, dim = c(N_STEP, N_STEP, N_STEP))
+
+t_elapsed <- (proc.time() - t_start)["elapsed"]
+cat(sprintf("Completato in %.1f s.\n", t_elapsed))
+
+# Minimo della mappa e sua posizione
+chi2_map_min <- min(mappa3D)
+idx_min      <- which(mappa3D == chi2_map_min, arr.ind = TRUE)[1L, ]
+
+cat(sprintf("\nchi2_min (mappa)  = %.4f\n", chi2_map_min))
+cat(sprintf(
+  "  A_best     = %+.4e   [indice griglia %d / %d]\n",
+  A_grid[idx_min[1]],
+  idx_min[1],
+  N_STEP
+))
+cat(sprintf(
+  "  omega0_best= %+.4e   [indice griglia %d / %d]\n",
+  om_grid[idx_min[2]],
+  idx_min[2],
+  N_STEP
+))
+cat(sprintf(
+  "  tau_best   = %+.4e   [indice griglia %d / %d]\n",
+  tau_grid[idx_min[3]],
+  idx_min[3],
+  N_STEP
+))
+
+
+# ------------------------------------------------------------------------------
+# 8.4  Profilazione 1D — per ogni parametro, minimo sugli altri due
+# ------------------------------------------------------------------------------
+
+# apply(mappa3D, MARGIN, FUN) applica FUN lungo il margine indicato.
+# apply(arr, 1, min) → vettore: per ogni iA, min su (iOm, iTau)
+prof_A   <- apply(mappa3D, 1L, min)   # profilo su A
+prof_om  <- apply(mappa3D, 2L, min)   # profilo su omega0
+prof_tau <- apply(mappa3D, 3L, min)   # profilo su tau
+
+
+# ------------------------------------------------------------------------------
+# 8.5  Profilazione 2D — per ogni coppia, minimo sul terzo parametro
+# ------------------------------------------------------------------------------
+
+# apply(arr, c(1,2), min) → matrice [iA, iOm]: min su iTau
+prof2D_A_om  <- apply(mappa3D, c(1L, 2L), min)   # (A, omega0),  marg. tau
+prof2D_A_tau <- apply(mappa3D, c(1L, 3L), min)   # (A, tau),     marg. omega0
+prof2D_om_tau <- apply(mappa3D, c(2L, 3L), min)  # (omega0, tau), marg. A
+
+
+# ------------------------------------------------------------------------------
+# 8.6  Calcolo delle incertezze: criterio Δchi² = 1
+# ------------------------------------------------------------------------------
+
+#' Trova i limiti ±1-sigma sul profilo 1D del chi².
+#'
+#' Algoritmo:
+#'   1. Localizza il minimo del profilo.
+#'   2. A sinistra del minimo: trova l'indice dove il profilo è più vicino
+#'      a chi2_min + delta (interpolazione lineare opzionale).
+#'   3. Idem a destra.
+#'
+#' @param prof      Vettore del profilo 1D del chi².
+#' @param grid      Vettore delle coordinate del parametro (stessa lunghezza).
+#' @param chi2_0    Valore minimo del chi² (può differire leggermente da
+#'                  min(prof) se la griglia è rada).
+#' @param delta     Soglia in unità di chi² (default 1 → 1-sigma).
+#'
+#' @return Lista: par_best, par_sx, par_dx, err_sx, err_dx.
+findUncertainty <- function(prof, grid, chi2_0, delta = 1.0) {
+  level    <- chi2_0 + delta
+  idx_best <- which.min(prof)
+  
+  # --- lato sinistro ---
+  if (idx_best > 1L) {
+    left_vals <- prof[seq_len(idx_best)]
+    idx_sx    <- which.min(abs(left_vals - level))
+    # interpolazione lineare tra i due punti che straddlano il livello
+    if (idx_sx < idx_best && idx_sx > 1L) {
+      d1 <- abs(left_vals[idx_sx - 1L] - level)
+      d2 <- abs(left_vals[idx_sx]      - level)
+      par_sx <- (grid[idx_sx - 1L] * d2 + grid[idx_sx] * d1) / (d1 + d2)
+    } else {
+      par_sx <- grid[idx_sx]
+    }
+  } else {
+    warning("Il minimo è al bordo sinistro della griglia — aumenta N_SIGMA.")
+    par_sx <- grid[1L]
+  }
+  
+  # --- lato destro ---
+  if (idx_best < length(prof)) {
+    right_vals <- prof[idx_best:length(prof)]
+    idx_dx_rel <- which.min(abs(right_vals - level))
+    idx_dx     <- idx_dx_rel + idx_best - 1L
+    if (idx_dx > idx_best && idx_dx < length(prof)) {
+      d1 <- abs(prof[idx_dx]     - level)
+      d2 <- abs(prof[idx_dx + 1L] - level)
+      par_dx <- (grid[idx_dx] * d2 + grid[idx_dx + 1L] * d1) / (d1 + d2)
+    } else {
+      par_dx <- grid[idx_dx]
+    }
+  } else {
+    warning("Il minimo è al bordo destro della griglia — aumenta N_SIGMA.")
+    par_dx <- grid[length(grid)]
+  }
+  
+  list(
+    par_best = grid[idx_best],
+    par_sx   = par_sx,
+    par_dx   = par_dx,
+    err_sx   = grid[idx_best] - par_sx,
+    err_dx   = par_dx - grid[idx_best]
+  )
+}
+
+unc_A   <- findUncertainty(prof_A, A_grid, chi2_map_min)
+unc_om  <- findUncertainty(prof_om, om_grid, chi2_map_min)
+unc_tau <- findUncertainty(prof_tau, tau_grid, chi2_map_min)
+
+# Omega e frequenza smorzata derivate dal best fit della mappa
+Omega_d <- sqrt(max(0, unc_om$par_best^2 - 1 / unc_tau$par_best^2))
+
+cat("\n====== Incertezze da mappatura chi² (Δchi² = 1) ======\n")
+cat(sprintf(
+  "  A      = %+.4e  - %.2e  + %.2e\n",
+  unc_A$par_best,
+  unc_A$err_sx,
+  unc_A$err_dx
+))
+cat(
+  sprintf(
+    "  omega0 = %+.4e  - %.2e  + %.2e  rad/s\n",
+    unc_om$par_best,
+    unc_om$err_sx,
+    unc_om$err_dx
+  )
+)
+cat(
+  sprintf(
+    "  tau    = %+.4e  - %.2e  + %.2e  s\n",
+    unc_tau$par_best,
+    unc_tau$err_sx,
+    unc_tau$err_dx
+  )
+)
+cat(sprintf("  Omega_d = %.4e  rad/s\n", Omega_d))
+cat(sprintf("  f_d     = %.4e  Hz\n", Omega_d / (2 * pi)))
+
+# Confronto con gli errori dalla matrice di covarianza del fit NLS
+cat("\n====== Confronto con errori dalla matrice di covarianza (NLS) ======\n")
+cat(sprintf("  sigma(A)      (cov) = %.2e\n", errs_bf["A"]))
+cat(sprintf("  sigma(omega0) (cov) = %.2e  rad/s\n", errs_bf["omega0"]))
+cat(sprintf("  sigma(tau)    (cov) = %.2e  s\n", errs_bf["tau"]))
+
+
+# ==============================================================================
+# 9. GRAFICI DIAGNOSTICI CON ggplot2
+# ==============================================================================
+#
+# Si producono tre tipi di figura:
+#
+#  (a) Profili 1D del chi² per A, omega0, tau — con linee Δchi² = 1, 2.3, 3.84.
+#  (b) Mappe 2D profilate (contour filled) per le coppie:
+#        (omega0, tau), (A, tau), (A, omega0)
+#      con i profili 1D a margine (layout "corner plot" minimale).
+#  (c) Plot riassuntivo con le bande di incertezza sovrapposte al segnale.
+#
+# ==============================================================================
+
+suppressPackageStartupMessages({
+  library(ggplot2)
+  library(dplyr)
+  library(patchwork)
+})
+
+# Livelli di soglia del chi²
+LVL <- list(
+  sigma1_1D = chi2_map_min + 1.00,
+  # 1-sigma,  1 param  (68.3 %)
+  sigma1_2D = chi2_map_min + 2.30,
+  # 1-sigma,  2 param  (68.3 % in 2D)
+  sigma2_1D = chi2_map_min + 3.84,
+  # 2-sigma,  1 param  (95 %)
+  sigma2_2D = chi2_map_min + 6.18    # 2-sigma,  2 param  (95 % in 2D)
+)
+
+# Palette colori per le bande dei contour (da scuro a chiaro)
+FILL_COLS  <- c("#2166AC", "#74ADD1", "#FEE08B", "#D73027")
+LINE_COLOR <- "grey20"
+
+
+# ------------------------------------------------------------------------------
+# 9.1  Funzione ausiliaria: profilo 1D → ggplot
+# ------------------------------------------------------------------------------
+
+#' Costruisce il plot del profilo 1D del chi².
+#'
+#' @param grid    Vettore coordinate parametro.
+#' @param prof    Vettore chi² profilato.
+#' @param unc     Lista restituita da findUncertainty().
+#' @param xlab    Etichetta asse x (stringa o expression()).
+#' @param title   Titolo del plot.
+#'
+#' @return Oggetto ggplot.
+plotProfile1D <- function(grid, prof, unc, xlab, title) {
+  df <- data.frame(par = grid, chi2 = prof)
+  
+  # banda ombreggiata tra i limiti ±1-sigma
+  df_band <- df |> filter(par >= unc$par_sx & par <= unc$par_dx)
+  
+  ggplot(df, aes(x = par, y = chi2)) +
+    
+    # banda ombreggiata entro Δchi²=1
+    geom_ribbon(
+      data  = df_band,
+      aes(ymin = chi2_map_min, ymax = chi2),
+      fill  = "#74ADD1",
+      alpha = 0.25
+    ) +
+    
+    # profilo
+    geom_line(color = "steelblue", linewidth = 1) +
+    
+    # linee orizzontali di riferimento
+    geom_hline(
+      yintercept = LVL$sigma1_1D,
+      linetype = "dashed",
+      color = "red",
+      linewidth = 0.8
+    ) +
+    geom_hline(
+      yintercept = LVL$sigma1_2D,
+      linetype = "dotted",
+      color = "orange",
+      linewidth = 0.8
+    ) +
+    geom_hline(
+      yintercept = LVL$sigma2_1D,
+      linetype = "dotdash",
+      color = "purple",
+      linewidth = 0.8
+    ) +
+    
+    # linee verticali: best fit e limiti 1-sigma
+    geom_vline(
+      xintercept = unc$par_best,
+      color = "grey30",
+      linetype = "solid",
+      linewidth = 0.6
+    ) +
+    geom_vline(
+      xintercept = unc$par_sx,
+      color = "red",
+      linetype = "dashed",
+      linewidth = 0.6
+    ) +
+    geom_vline(
+      xintercept = unc$par_dx,
+      color = "red",
+      linetype = "dashed",
+      linewidth = 0.6
+    ) +
+    
+    # etichette Δchi² sui livelli
+    annotate(
+      "text",
+      x = max(grid),
+      y = LVL$sigma1_1D,
+      label = expression(Delta * chi^2 == 1),
+      hjust = 1.1,
+      vjust = -0.3,
+      size = 3,
+      color = "red"
+    ) +
+    annotate(
+      "text",
+      x = max(grid),
+      y = LVL$sigma2_1D,
+      label = expression(Delta * chi^2 == 3.84),
+      hjust = 1.1,
+      vjust = -0.3,
+      size = 3,
+      color = "purple"
+    ) +
+    
+    # valore best fit annotato
+    annotate(
+      "text",
+      x = unc$par_best,
+      y = chi2_map_min,
+      label = sprintf("%.3e", unc$par_best),
+      hjust = -0.15,
+      vjust = 1.5,
+      size = 2.8,
+      color = "grey30"
+    ) +
+    
+    labs(title = title,
+         x = xlab,
+         y = expression(chi^2)) +
+    theme_minimal(base_size = 11) +
+    theme(panel.grid.minor = element_blank())
+}
+
+p_profA <- plotProfile1D(
+  A_grid,
+  prof_A,
+  unc_A,
+  xlab  = "A",
+  title = expression("Profilo " * chi^2 * " — ampiezza A")
+)
+
+p_profOm <- plotProfile1D(
+  om_grid,
+  prof_om,
+  unc_om,
+  xlab  = expression(omega[0] * " (rad/s)"),
+  title = expression("Profilo " * chi^2 * " — " * omega[0])
+)
+
+p_profTau <- plotProfile1D(
+  tau_grid,
+  prof_tau,
+  unc_tau,
+  xlab  = expression(tau * " (s)"),
+  title = expression("Profilo " * chi^2 * " — " * tau)
+)
+
+# Composizione con patchwork
+(p_profA | p_profOm | p_profTau) +
+  plot_annotation(
+    title   = expression("Profili 1D del " * chi^2 * " — transitorio RLC"),
+    subtitle = sprintf(
+      "chi²_min = %.2f  |  dof = %d  |  griglia %d×%d×%d",
+      chi2_map_min,
+      nrow(data) - 5L,
+      N_STEP,
+      N_STEP,
+      N_STEP
+    ),
+    theme   = theme(
+      plot.title    = element_text(face = "bold", size = 13),
+      plot.subtitle = element_text(size = 9, color = "grey40")
+    )
+  )
+
+
+# ------------------------------------------------------------------------------
+# 9.2  Funzione ausiliaria: mappa 2D → ggplot
+# ------------------------------------------------------------------------------
+
+#' Costruisce il plot contour del profilo 2D del chi² con i margini 1D.
+#'
+#' Layout: mappa centrale + profilo 1D sull'asse y (a sinistra) +
+#'         profilo 1D sull'asse x (in basso).
+#'
+#' @param mat2D   Matrice [ix, iy] del chi² profilato (NON trasposta).
+#' @param x_grid  Coordinate dell'asse x.
+#' @param y_grid  Coordinate dell'asse y.
+#' @param x_unc   Lista incertezza sull'asse x (da findUncertainty).
+#' @param y_unc   Lista incertezza sull'asse y (da findUncertainty).
+#' @param xlab    Etichetta asse x.
+#' @param ylab    Etichetta asse y.
+#' @param title   Titolo del pannello.
+plotProfile2D <- function(mat2D,
+                          x_grid,
+                          y_grid,
+                          x_unc,
+                          y_unc,
+                          xlab,
+                          ylab,
+                          title) {
+  # --- 1. Preparazione dati per la mappa ---
+  # Creiamo il dataframe assicurandoci che la corrispondenza griglia-matrice sia corretta
+  df2D <- expand.grid(x = x_grid, y = y_grid) |>
+    mutate(chi2  = as.vector(mat2D), dchi2 = chi2 - chi2_map_min)
+  
+  # --- 2. Mappa centrale (Stile PltExp con Plasma) ---
+  p_map <- ggplot(df2D, aes(x = x, y = y)) +
+    # Sfondo sfumato continuo
+    geom_raster(aes(fill = chi2), interpolate = TRUE) +
+    
+    # Ellissi di contorno (generiche e statistiche)
+    geom_contour(
+      aes(z = chi2),
+      bins = 15,
+      color = "black",
+      alpha = 0.3,
+      linewidth = 0.2
+    ) +
+    geom_contour(
+      aes(z = dchi2),
+      breaks    = c(1.00, 2.30, 3.84, 6.18),
+      color     = "black",
+      linetype  = "dashed",
+      linewidth = 0.6
+    ) +
+    
+    # NUOVO: Linee del "mirino" che lambiscono i profili 1-sigma
+    geom_vline(
+      xintercept = c(x_unc$par_sx, x_unc$par_dx),
+      color = "grey20",
+      linetype = "dashed",
+      linewidth = 0.5,
+      alpha = 0.6
+    ) +
+    geom_hline(
+      yintercept = c(y_unc$par_sx, y_unc$par_dx),
+      color = "grey20",
+      linetype = "dashed",
+      linewidth = 0.5,
+      alpha = 0.6
+    ) +
+    
+    # Punto di best fit
+    geom_point(
+      aes(x = x_unc$par_best, y = y_unc$par_best),
+      shape = 16,
+      size = 2.5,
+      color = "black"
+    ) +
+    
+    scale_fill_viridis_c(option = "plasma", name = expression(chi^2)) +
+    labs(x = xlab, y = ylab) +
+    theme_minimal(base_size = 10) +
+    theme(
+      legend.position = "right",
+      panel.grid      = element_blank(),
+      axis.title      = element_text(size = 9),
+      panel.border    = element_rect(
+        color = "black",
+        fill = NA,
+        linewidth = 1
+      )
+    )
+  
+  # --- 3. Profilo 1D sull'asse Y (Grafico a sinistra) ---
+  # Usiamo il margine 2 della matrice (y) per proiettare sul lato
+  df_py_side <- data.frame(par = y_grid, chi2 = apply(mat2D, 2L, min))
+  
+  p_side <- ggplot(df_py_side, aes(x = chi2, y = par)) +
+    geom_line(color = "steelblue", linewidth = 0.9) +
+    # Linee che si allineano alla mappa
+    geom_hline(
+      yintercept = c(y_unc$par_sx, y_unc$par_dx),
+      color = "grey20",
+      linetype = "dashed",
+      linewidth = 0.5
+    ) +
+    geom_vline(
+      xintercept = LVL$sigma1_1D,
+      color = "red",
+      linetype = "dotted"
+    ) +
+    labs(x = expression(chi^2), y = NULL) +
+    scale_x_continuous(n.breaks = 3) +
+    theme_minimal(base_size = 9) +
+    theme(panel.grid.minor = element_blank(), axis.text.y      = element_blank())
+  
+  # --- 4. Profilo 1D sull'asse X (Grafico in basso) ---
+  # Usiamo il margine 1 della matrice (x)
+  df_px_bottom <- data.frame(par = x_grid, chi2 = apply(mat2D, 1L, min))
+  
+  p_bottom <- ggplot(df_px_bottom, aes(x = par, y = chi2)) +
+    geom_line(color = "steelblue", linewidth = 0.9) +
+    # Linee che si allineano alla mappa
+    geom_vline(
+      xintercept = c(x_unc$par_sx, x_unc$par_dx),
+      color = "grey20",
+      linetype = "dashed",
+      linewidth = 0.5
+    ) +
+    geom_hline(
+      yintercept = LVL$sigma1_1D,
+      color = "red",
+      linetype = "dotted"
+    ) +
+    labs(x = NULL, y = expression(chi^2)) +
+    scale_y_continuous(n.breaks = 3) +
+    theme_minimal(base_size = 9) +
+    theme(panel.grid.minor = element_blank(), axis.text.x      = element_blank())
+  
+  # --- 5. Assemblaggio Finale ---
+  p_empty <- ggplot() + theme_void()
+  
+  # Layout a "L" invertita (Corner Plot)
+  (p_side | p_map) / (p_empty | p_bottom) +
+    plot_layout(widths  = c(1, 4), heights = c(4, 1)) +
+    plot_annotation(title = title,
+                    theme = theme(plot.title = element_text(face = "bold", size = 11)))
+}
+
+# Mappa (omega0, tau) — profilata su A
+p2D_om_tau <- plotProfile2D(
+  mat2D  = prof2D_om_tau,
+  # t() per avere [iOm, iTau] → x=om, y=tau
+  x_grid = om_grid,
+  y_grid = tau_grid,
+  x_unc  = unc_om,
+  y_unc  = unc_tau,
+  xlab   = expression(omega[0] * " (rad/s)"),
+  ylab   = expression(tau * " (s)"),
+  title  = expression("Profilo 2D " * chi^2 * ": " * omega[0] * " vs " * tau * " (marg. su A)")
+)
+print(p2D_om_tau)
+
+# Mappa (A, tau) — profilata su omega0
+p2D_A_tau <- plotProfile2D(
+  mat2D  = prof2D_A_tau,
+  # [iA, iTau] → x=A, y=tau
+  x_grid = A_grid,
+  y_grid = tau_grid,
+  x_unc  = unc_A,
+  y_unc  = unc_tau,
+  xlab   = "A",
+  ylab   = expression(tau * " (s)"),
+  title  = expression("Profilo 2D " * chi^2 * ": A vs " * tau * " (marg. su " * omega[0] * ")")
+)
+print(p2D_A_tau)
+
+# Mappa (A, omega0) — profilata su tau
+p2D_A_om <- plotProfile2D(
+  mat2D  = prof2D_A_om,
+  # [iA, iOm] → x=A, y=om
+  x_grid = A_grid,
+  y_grid = om_grid,
+  x_unc  = unc_A,
+  y_unc  = unc_om,
+  xlab   = "A",
+  ylab   = expression(omega[0] * " (rad/s)"),
+  title  = expression("Profilo 2D " * chi^2 * ": A vs " * omega[0] * " (marg. su " * tau * ")")
+)
+print(p2D_A_om)
+
+
+# ------------------------------------------------------------------------------
+# 9.3  Plot riassuntivo: segnale + bande di incertezza
+# ------------------------------------------------------------------------------
+#
+# Sovrappone al segnale e al fit best fit un ventaglio di curve ottenute
+# variando ciascun parametro di ±1-sigma (dalla mappatura del chi²).
+# Questo visualizza graficamente l'effetto delle incertezze sul segnale.
+
+t_fine  <- seq(min(data$time), max(data$time), length.out = 2000)
+
+# Curva best fit dalla mappa (usa i valori al minimo della griglia)
+V_bf_map <- modelFull(
+  t_fine,
+  A      = unc_A$par_best,
+  omega0 = unc_om$par_best,
+  tau    = unc_tau$par_best,
+  v0     = v0_bf,
+  t0     = t0_bf
+)
+df_fit_map <- data.frame(time = t_fine, volt = V_bf_map, tipo = "Best fit (mappa)")
+
+# Genera le curve ai limiti ±1-sigma per omega0 e tau (i parametri fisici chiave)
+param_variants <- list(
+  list(
+    A = unc_A$par_best,
+    om = unc_om$par_sx,
+    tau = unc_tau$par_best,
+    label = "omega0 - 1σ"
+  ),
+  list(
+    A = unc_A$par_best,
+    om = unc_om$par_dx,
+    tau = unc_tau$par_best,
+    label = "omega0 + 1σ"
+  ),
+  list(
+    A = unc_A$par_best,
+    om = unc_om$par_best,
+    tau = unc_tau$par_sx,
+    label = "tau - 1σ"
+  ),
+  list(
+    A = unc_A$par_best,
+    om = unc_om$par_best,
+    tau = unc_tau$par_dx,
+    label = "tau + 1σ"
+  )
+)
+
+df_variants <- do.call(rbind, lapply(param_variants, function(v) {
+  data.frame(
+    time = t_fine,
+    volt = modelFull(t_fine, v$A, v$om, v$tau, v0_bf, t0_bf),
+    tipo = v$label
+  )
+}))
+
+# Colori per le varianti
+variant_cols <- c(
+  "omega0 - 1σ" = "#2166AC",
+  "omega0 + 1σ" = "#4DAC26",
+  "tau - 1σ"    = "#D01C8B",
+  "tau + 1σ"    = "#F1B6DA"
+)
+
+p_summary <- ggplot() +
+  # dati con barre di errore
+  geom_errorbar(
+    data = data,
+    aes(
+      x = time,
+      ymin = volt - voltUnc,
+      ymax = volt + voltUnc
+    ),
+    width = 0,
+    color = "red",
+    alpha = 0.15
+  ) +
+  geom_point(
+    data = data,
+    aes(x = time, y = volt),
+    color = "red",
+    size = 0.4,
+    alpha = 0.5
+  ) +
+  # varianti ±1-sigma
+  geom_line(
+    data = df_variants,
+    aes(
+      x = time,
+      y = volt,
+      color = tipo,
+      linetype = tipo
+    ),
+    linewidth = 0.7,
+    alpha = 0.85
+  ) +
+  # best fit
+  geom_line(
+    data = df_fit_map,
+    aes(x = time, y = volt),
+    color = "black",
+    linewidth = 1,
+    linetype = "solid"
+  ) +
+  scale_color_manual(values = variant_cols) +
+  scale_linetype_manual(
+    values = c(
+      "omega0 - 1σ" = "dashed",
+      "omega0 + 1σ" = "dashed",
+      "tau - 1σ"    = "dotted",
+      "tau + 1σ"    = "dotted"
+    )
+  ) +
+  labs(
+    title    = expression("Transitorio RLC — best fit e bande ±1" * sigma * " (mappa " * chi^2 * ")"),
+    subtitle = sprintf(
+      "A = %.3e  |  ω₀ = %.4e rad/s  |  τ = %.4e s",
+      unc_A$par_best,
+      unc_om$par_best,
+      unc_tau$par_best
+    ),
+    x     = "Tempo (s)",
+    y     = "Tensione (V)",
+    color = "Variante",
+    linetype = "Variante"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(legend.position = "bottom", panel.grid.minor = element_blank())
+
+print(p_summary)
+
+
+# ------------------------------------------------------------------------------
+# 9.4  Tabella riassuntiva delle incertezze (console)
+# ------------------------------------------------------------------------------
+
+cat("\n")
+cat(strrep("=", 70), "\n")
+cat("  RISULTATI FINALI — Transitorio RLC (mappatura chi²)\n")
+cat(strrep("=", 70), "\n")
+cat(sprintf(
+  "  %-8s = %+.4e  - %.2e  + %.2e\n",
+  "A",
+  unc_A$par_best,
+  unc_A$err_sx,
+  unc_A$err_dx
+))
+cat(
+  sprintf(
+    "  %-8s = %+.4e  - %.2e  + %.2e  rad/s\n",
+    "omega0",
+    unc_om$par_best,
+    unc_om$err_sx,
+    unc_om$err_dx
+  )
+)
+cat(
+  sprintf(
+    "  %-8s = %+.4e  - %.2e  + %.2e  s\n",
+    "tau",
+    unc_tau$par_best,
+    unc_tau$err_sx,
+    unc_tau$err_dx
+  )
+)
+cat(sprintf("  %-8s = %+.4e  rad/s  (derivata dal best fit)\n", "Omega_d", Omega_d))
+cat(sprintf("  %-8s = %+.4e  Hz\n", "f_d", Omega_d / (2 * pi)))
+cat(sprintf("\n  chi2_min (mappa) = %.4f\n", chi2_map_min))
+cat(sprintf("  chi2_min (NLS)   = %.4f\n", chi2_min_fit))
+cat(sprintf(
+  "  Discrepanza      = %.4f  (attesa ~0 se la griglia è sufficientemente fine)\n",
+  abs(chi2_map_min - chi2_min_fit)
+))
+cat(strrep("=", 70), "\n")
