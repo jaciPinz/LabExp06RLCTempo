@@ -41,12 +41,17 @@ suppressPackageStartupMessages({
 #'   - Tempo:    sigma = sigmaR costante (solo errore di lettura).
 #'
 #' @return Lo stesso tipo di `data` con la colonna/vettore di incertezza.
-assignUncertainty <- function(data, type, scale = 1/25, col = NULL) {
-  
+assignUncertainty <- function(data,
+                              type,
+                              scale = 1 / 25,
+                              col = NULL) {
   sigmaR <- 0.04 * scale
   
   if (type == "volt") {
-    values  <- if (is.data.frame(data)) data[[col]] else data
+    values  <- if (is.data.frame(data))
+      data[[col]]
+    else
+      data
     sigmaK  <- 0.012 * abs(values)
     uncert  <- sqrt(sigmaR^2 + sigmaK^2)
     
@@ -57,7 +62,10 @@ assignUncertainty <- function(data, type, scale = 1/25, col = NULL) {
     return(uncert)
     
   } else if (type == "time") {
-    uncert <- rep(sigmaR, if (is.data.frame(data)) nrow(data) else length(data))
+    uncert <- rep(sigmaR, if (is.data.frame(data))
+      nrow(data)
+      else
+        length(data))
     
     if (is.data.frame(data)) {
       data[[paste0(col, "Unc")]] <- uncert
@@ -80,15 +88,18 @@ START_ROW <- 176
 
 raw <- read_csv("Desktop/ALL0000/F0000CH2.CSV", col_names = FALSE)
 
-data <- data.frame(
-  time = as.numeric(raw$X4[START_ROW:nrow(raw)]),
-  volt = as.numeric(raw$X5[START_ROW:nrow(raw)])
-)
+data <- data.frame(time = as.numeric(raw$X4[START_ROW:nrow(raw)]), volt = as.numeric(raw$X5[START_ROW:nrow(raw)]))
 rm(raw)
 
 # Aggiunta delle incertezze (scale ricavate dalla configurazione dell'oscilloscopio)
-data <- assignUncertainty(data, type = "time", scale = 0.001, col = "time")
-data <- assignUncertainty(data, type = "volt", scale = 0.5,   col = "volt")
+data <- assignUncertainty(data,
+                          type = "time",
+                          scale = 0.001,
+                          col = "time")
+data <- assignUncertainty(data,
+                          type = "volt",
+                          scale = 0.5,
+                          col = "volt")
 
 
 # ==============================================================================
@@ -99,19 +110,20 @@ data <- assignUncertainty(data, type = "volt", scale = 0.5,   col = "volt")
 #'
 #' Per t <= t0 il segnale vale v0; per t > t0 è un oscillatore smorzato.
 modelFull <- function(t, A, omega0, tau, v0, t0) {
-  Omega <- sqrt(pmax(1e-12, omega0^2 - 1/tau^2))
+  Omega <- sqrt(pmax(1e-12, omega0^2 - 1 / tau^2))
   dt    <- t - t0
   
-  Vosc <- A * exp(-dt/tau) *
-    (cos(Omega*dt) + sin(Omega*dt)/(Omega*tau))
+  Vosc <- A * exp(-dt / tau) *
+    (cos(Omega * dt) + sin(Omega * dt) / (Omega * tau))
   
   return(Vosc + v0)
 }
 
 #' Modello ridotto di VL(t): usato dopo aver traslato t0->0 e rimosso v0.
 modelReduced <- function(t, A, omega0, tau, phi) {
-  Omega <- sqrt(pmax(1e-12, omega0^2 - 1/tau^2))
-  A * exp(-t/tau) * (cos(Omega*t + phi) + sin(Omega*t + phi) / (Omega*tau))
+  Omega <- sqrt(pmax(1e-12, omega0^2 - 1 / tau^2))
+  A * exp(-t / tau) * (cos(Omega * t + phi) + sin(Omega * t + phi) / (Omega *
+                                                                        tau))
 }
 
 # ------------------------------------------------------------------------------
@@ -129,16 +141,15 @@ printFitResults <- function(fit, step) {
   chi2 <- sum(w * resid^2)
   dof  <- length(resid) - length(params)
   
-  cat(sprintf("  %-8s = %+.4e  ±  %.2e\n",
-              names(params), params, errs), sep = "")
-  cat(sprintf("  chi2 / dof  =  %.2f / %d  =  %.3f\n",
-              chi2, dof, chi2/dof))
+  cat(sprintf("  %-8s = %+.4e  ±  %.2e\n", names(params), params, errs), sep = "")
+  cat(sprintf("  chi2 / dof  =  %.2f / %d  =  %.3f\n", chi2, dof, chi2 /
+                dof))
   
   if (step == 2) {
-    Omega <- sqrt(max(0, params["omega0"]^2 - 1/params["tau"]^2))
+    Omega <- sqrt(max(0, params["omega0"]^2 - 1 / params["tau"]^2))
     cat(sprintf("\n  Omega  = %.4e  rad/s\n", Omega))
-    cat(sprintf("  f_d    = %.4e  Hz\n",    Omega / (2*pi)))
-    cat(sprintf("  tau    = %.4e  s\n",     params["tau"]))
+    cat(sprintf("  f_d    = %.4e  Hz\n", Omega / (2 * pi)))
+    cat(sprintf("  tau    = %.4e  s\n", params["tau"]))
   }
 }
 
@@ -155,9 +166,11 @@ printFitResults <- function(fit, step) {
 #'
 #' @return Lista invisibile con fitFull (solo se !fixT0), fitReduced, dataCut.
 fitVL <- function(data,
-                  omega0Init = 1, tauInit = 1, AInit = 1,
-                  v0Init = 0, t0Init = 0) {
-  
+                  omega0Init = 1,
+                  tauInit = 1,
+                  AInit = 1,
+                  v0Init = 0,
+                  t0Init = 0) {
   nlsControl <- nls.control(maxiter = 500, tol = 1e-8)
   
   # --- Fit completo ---
@@ -198,7 +211,8 @@ fitVL <- function(data,
 #' @param sogliaPercentuale Frazione minima rispetto al primo picco (0–1).
 #'
 #' @return Lista con aInit, omega0Init, tauInit, phiInit, v0Init, t0Init, indici.
-estimateTransientInitialsBrutal <- function(data, kNeighbors = 25,
+estimateTransientInitialsBrutal <- function(data,
+                                            kNeighbors = 25,
                                             sogliaPercentuale = 0.1) {
   tempo    <- as.numeric(data$time)
   tensione <- as.numeric(data$volt)
@@ -210,9 +224,10 @@ estimateTransientInitialsBrutal <- function(data, kNeighbors = 25,
   # Ricerca massimi/minimi con gestione plateau
   i <- kNeighbors + 1
   while (i <= n - kNeighbors) {
-    
     j <- i
-    while (j < n - kNeighbors && tensione[j + 1] == tensione[i]) j <- j + 1
+    while (j < n - kNeighbors &&
+           tensione[j + 1] == tensione[i])
+      j <- j + 1
     
     val    <- tensione[i]
     sinSx  <- tensione[(i - kNeighbors):(i - 1)]
@@ -220,12 +235,14 @@ estimateTransientInitialsBrutal <- function(data, kNeighbors = 25,
     idxMid <- round((i + j) / 2)
     
     if (all(val >= sinSx) && all(val >= sinDx)) {
-      if (length(indiceMassimi) == 0 || idxMid > max(indiceMassimi) + kNeighbors)
+      if (length(indiceMassimi) == 0 ||
+          idxMid > max(indiceMassimi) + kNeighbors)
         indiceMassimi <- c(indiceMassimi, idxMid)
     }
     
     if (all(val <= sinSx) && all(val <= sinDx)) {
-      if (length(indiceMinimi) == 0 || idxMid > max(indiceMinimi) + kNeighbors)
+      if (length(indiceMinimi) == 0 ||
+          idxMid > max(indiceMinimi) + kNeighbors)
         indiceMinimi <- c(indiceMinimi, idxMid)
     }
     
@@ -256,7 +273,8 @@ estimateTransientInitialsBrutal <- function(data, kNeighbors = 25,
   # Estrae T, tau, omegaPseudo e omega0 da coppie consecutive
   stimaDaEstremi <- function(tempo, tensioneCentrata, indiceEstremi) {
     indiceEstremi <- sort(indiceEstremi)
-    if (length(indiceEstremi) < 2) return(NULL)
+    if (length(indiceEstremi) < 2)
+      return(NULL)
     
     t <- tempo[indiceEstremi]
     v <- tensioneCentrata[indiceEstremi]
@@ -269,7 +287,8 @@ estimateTransientInitialsBrutal <- function(data, kNeighbors = 25,
       is.finite(v1) & is.finite(v2) &
       v1 > 0 & v2 > 0 & v1 > v2
     
-    if (!any(ok)) return(NULL)
+    if (!any(ok))
+      return(NULL)
     
     T_i <- T_i[ok]
     v1  <- v1[ok]
@@ -279,7 +298,12 @@ estimateTransientInitialsBrutal <- function(data, kNeighbors = 25,
     tau_i <- T_i / log(v1 / v2)
     omega0_i <- sqrt(omegaPseudo_i^2 + 1 / tau_i^2)
     
-    list(T = T_i, tau = tau_i, omegaPseudo = omegaPseudo_i, omega0 = omega0_i)
+    list(
+      T = T_i,
+      tau = tau_i,
+      omegaPseudo = omegaPseudo_i,
+      omega0 = omega0_i
+    )
   }
   
   resMax <- stimaDaEstremi(tempo, tensioneCentrata, indiceMassimi)
@@ -332,7 +356,7 @@ estimateTransientInitialsBrutal <- function(data, kNeighbors = 25,
   dVdt <- diff(tensione) / diff(tempo)
   tempoMid <- tempo[-1]
   
-  sigmaDer <- sd(dVdt[1:(nInit-1)], na.rm = TRUE)
+  sigmaDer <- sd(dVdt[1:(nInit - 1)], na.rm = TRUE)
   threshold <- 5 * sigmaDer
   
   idx <- which(abs(dVdt) > threshold)
@@ -343,8 +367,11 @@ estimateTransientInitialsBrutal <- function(data, kNeighbors = 25,
     stimaT0 <- median(tempo[1:nInit])
   }
   
-  cat(sprintf("Picchi validi trovati: max=%d, min=%d\n",
-              length(indiceMassimi), length(indiceMinimi)))
+  cat(sprintf(
+    "Picchi validi trovati: max=%d, min=%d\n",
+    length(indiceMassimi),
+    length(indiceMinimi)
+  ))
   
   list(
     aInit      = stimaA,
@@ -371,16 +398,35 @@ dataPMin <- data[initialGuesses$indiciMin, ]
 
 # Plot diagnostico: dati completi + massimi + minimi trovati
 plot(
-  data$time, data$volt,
-  col  = "red", pch = 16, cex = 0.5,
-  xlab = "Tempo (s)", ylab = "Tensione (V)",
+  data$time,
+  data$volt,
+  col  = "red",
+  pch = 16,
+  cex = 0.5,
+  xlab = "Tempo (s)",
+  ylab = "Tensione (V)",
   main = "Segnale VL(t) e picchi identificati"
 )
-points(dataPMax$time, dataPMax$volt, col = "blue",  pch = 16, cex = 0.8)
-points(dataPMin$time, dataPMin$volt, col = "green", pch = 16, cex = 0.8)
-legend("topright",
-       legend = c("Dati grezzi", "Massimi", "Minimi"),
-       col    = c("red", "blue", "green"), pch = 16)
+points(
+  dataPMax$time,
+  dataPMax$volt,
+  col = "blue",
+  pch = 16,
+  cex = 0.8
+)
+points(
+  dataPMin$time,
+  dataPMin$volt,
+  col = "green",
+  pch = 16,
+  cex = 0.8
+)
+legend(
+  "topright",
+  legend = c("Dati grezzi", "Massimi", "Minimi"),
+  col    = c("red", "blue", "green"),
+  pch = 16
+)
 
 # ==============================================================================
 # 6. FIT NON LINEARE
@@ -403,39 +449,57 @@ fitResults <- fitVL(
 params <- coef(fitResults$fitFull)
 
 # 2. Calcolo fitValues e residui REALI (non pesati)
-data$fitValues <- modelFull(data$time, params["A"], params["omega0"], 
-                            params["tau"], params["v0"], params["t0"])
+data$fitValues <- modelFull(data$time, params["A"], params["omega0"], params["tau"], params["v0"], params["t0"])
 
 # Calcolo differenza semplice in Volt
-data$residReal <- data$volt - data$fitValues 
+data$residReal <- data$volt - data$fitValues
 
 # 3. Griglia per la curva continua
 tGrid <- seq(min(data$time), max(data$time), length.out = 2000)
-fitDF <- data.frame(time = tGrid, 
-                    volt = modelFull(tGrid, params["A"], params["omega0"], 
-                                     params["tau"], params["v0"], params["t0"]))
+fitDF <- data.frame(time = tGrid,
+                    volt = modelFull(tGrid, params["A"], params["omega0"], params["tau"], params["v0"], params["t0"]))
 
 # --- PLOT SEGNALE CON BARRE D'ERRORE ---
 p_signal <- ggplot(data, aes(x = time, y = volt)) +
-  geom_errorbar(aes(ymin = volt - voltUnc, ymax = volt + voltUnc), 
-                width = 0, color = "red", alpha = 0.2) +
-  geom_point(color = "red", size = 0.5, alpha = 0.4) +
-  geom_line(data = fitDF, aes(x = time, y = volt), 
-            color = "black", linewidth = 0.8) +
-  geom_point(data = data[initialGuesses$indiciMax, ], color = "blue", size = 2) +
-  geom_point(data = data[initialGuesses$indiciMin, ], color = "green", size = 2) +
-  labs(title = "Transitorio RLC — Fit e Incertezze",
-       x = "Tempo (s)", y = "Tensione (V)") +
+  geom_errorbar(
+    aes(ymin = volt - voltUnc, ymax = volt + voltUnc),
+    width = 0,
+    color = "red",
+    alpha = 0.2
+  ) +
+  geom_point(color = "red",
+             size = 0.5,
+             alpha = 0.4) +
+  geom_line(
+    data = fitDF,
+    aes(x = time, y = volt),
+    color = "black",
+    linewidth = 0.8
+  ) +
+  geom_point(data = data[initialGuesses$indiciMax, ],
+             color = "blue",
+             size = 2) +
+  geom_point(data = data[initialGuesses$indiciMin, ],
+             color = "green",
+             size = 2) +
+  labs(title = "Transitorio RLC — Fit e Incertezze", x = "Tempo (s)", y = "Tensione (V)") +
   theme_minimal()
 
 # --- PLOT RESIDUI REALI (In Volt) ---
 p_resid <- ggplot(data, aes(x = time, y = residReal)) +
-  geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
-  geom_errorbar(aes(ymin = residReal - voltUnc, ymax = residReal + voltUnc), 
-                width = 0, color = "purple", alpha = 0.2) +
-  geom_point(color = "purple", size = 0.7, alpha = 0.5) +
-  labs(title = "Residui",
-       x = "Tempo (s)", y = "Residui (V)") + # Unità di misura esplicita
+  geom_hline(yintercept = 0,
+             linetype = "dashed",
+             color = "black") +
+  geom_errorbar(
+    aes(ymin = residReal - voltUnc, ymax = residReal + voltUnc),
+    width = 0,
+    color = "purple",
+    alpha = 0.2
+  ) +
+  geom_point(color = "purple",
+             size = 0.7,
+             alpha = 0.5) +
+  labs(title = "Residui", x = "Tempo (s)", y = "Residui (V)") + # Unità di misura esplicita
   theme_minimal()
 
 (p_signal / p_resid)
@@ -498,7 +562,7 @@ cat(sprintf("dof               = %d\n", nrow(data) - length(params_bf)))
 # ------------------------------------------------------------------------------
 
 N_SIGMA <- 20L    # ampiezza del range in unità di sigma (da covarianza)
-N_STEP  <- 160L   # punti per asse  (80^3 = 512 000 valutazioni del modello)
+N_STEP  <- 120L   # punti per asse  (80^3 = 512 000 valutazioni del modello)
 #
 # Aumenta N_STEP per una mappatura più fine, a scapito del tempo di calcolo.
 # Con N_STEP=80 e la funzione vettorizzata sotto, il calcolo richiede ~10–30 s
@@ -937,16 +1001,13 @@ plotProfile2D <- function(mat2D,
                           ylab,
                           title) {
   # --- 1. Preparazione dati per la mappa ---
-  # Creiamo il dataframe assicurandoci che la corrispondenza griglia-matrice sia corretta
   df2D <- expand.grid(x = x_grid, y = y_grid) |>
     mutate(chi2  = as.vector(mat2D), dchi2 = chi2 - chi2_map_min)
   
-  # --- 2. Mappa centrale (Stile PltExp con Plasma) ---
+  # --- 2. Mappa centrale ---
   p_map <- ggplot(df2D, aes(x = x, y = y)) +
-    # Sfondo sfumato continuo
     geom_raster(aes(fill = chi2), interpolate = TRUE) +
     
-    # Ellissi di contorno (generiche e statistiche)
     geom_contour(
       aes(z = chi2),
       bins = 15,
@@ -954,6 +1015,7 @@ plotProfile2D <- function(mat2D,
       alpha = 0.3,
       linewidth = 0.2
     ) +
+    
     geom_contour(
       aes(z = dchi2),
       breaks    = c(1.00, 2.30, 3.84, 6.18),
@@ -962,7 +1024,7 @@ plotProfile2D <- function(mat2D,
       linewidth = 0.6
     ) +
     
-    # NUOVO: Linee del "mirino" che lambiscono i profili 1-sigma
+    # mirino 1σ
     geom_vline(
       xintercept = c(x_unc$par_sx, x_unc$par_dx),
       color = "grey20",
@@ -978,7 +1040,6 @@ plotProfile2D <- function(mat2D,
       alpha = 0.6
     ) +
     
-    # Punto di best fit
     geom_point(
       aes(x = x_unc$par_best, y = y_unc$par_best),
       shape = 16,
@@ -1000,36 +1061,40 @@ plotProfile2D <- function(mat2D,
       )
     )
   
-  # --- 3. Profilo 1D sull'asse Y (Grafico a sinistra) ---
-  # Usiamo il margine 2 della matrice (y) per proiettare sul lato
-  df_py_side <- data.frame(par = y_grid, chi2 = apply(mat2D, 2L, min))
+  # --- 3. Profilo 1D asse Y (SINISTRA) ---
+  df_py_side <- data.frame(par  = y_grid, chi2 = apply(mat2D, 2L, min)) |>
+    arrange(par)
   
-  p_side <- ggplot(df_py_side, aes(x = chi2, y = par)) +
+  p_side <- ggplot(df_py_side, aes(x = par, y = chi2)) +
     geom_line(color = "steelblue", linewidth = 0.9) +
-    # Linee che si allineano alla mappa
-    geom_hline(
-      yintercept = c(y_unc$par_sx, y_unc$par_dx),
+    
+    # linee coerenti con la mappa
+    geom_vline(
+      xintercept = c(y_unc$par_sx, y_unc$par_dx),
       color = "grey20",
       linetype = "dashed",
       linewidth = 0.5
     ) +
-    geom_vline(
-      xintercept = LVL$sigma1_1D,
+    geom_hline(
+      yintercept = LVL$sigma1_1D,
       color = "red",
       linetype = "dotted"
     ) +
+    
+    coord_flip() +
+    
     labs(x = expression(chi^2), y = NULL) +
     scale_x_continuous(n.breaks = 3) +
     theme_minimal(base_size = 9) +
     theme(panel.grid.minor = element_blank(), axis.text.y      = element_blank())
   
-  # --- 4. Profilo 1D sull'asse X (Grafico in basso) ---
-  # Usiamo il margine 1 della matrice (x)
-  df_px_bottom <- data.frame(par = x_grid, chi2 = apply(mat2D, 1L, min))
+  # --- 4. Profilo 1D asse X (SOTTO) ---
+  df_px_bottom <- data.frame(par  = x_grid, chi2 = apply(mat2D, 1L, min)) |>
+    arrange(par)
   
   p_bottom <- ggplot(df_px_bottom, aes(x = par, y = chi2)) +
     geom_line(color = "steelblue", linewidth = 0.9) +
-    # Linee che si allineano alla mappa
+    
     geom_vline(
       xintercept = c(x_unc$par_sx, x_unc$par_dx),
       color = "grey20",
@@ -1041,17 +1106,17 @@ plotProfile2D <- function(mat2D,
       color = "red",
       linetype = "dotted"
     ) +
+    
     labs(x = NULL, y = expression(chi^2)) +
     scale_y_continuous(n.breaks = 3) +
     theme_minimal(base_size = 9) +
     theme(panel.grid.minor = element_blank(), axis.text.x      = element_blank())
   
-  # --- 5. Assemblaggio Finale ---
+  # --- 5. Layout finale ---
   p_empty <- ggplot() + theme_void()
   
-  # Layout a "L" invertita (Corner Plot)
   (p_side | p_map) / (p_empty | p_bottom) +
-    plot_layout(widths  = c(1, 4), heights = c(4, 1)) +
+    plot_layout(widths = c(1, 4), heights = c(4, 1)) +
     plot_annotation(title = title,
                     theme = theme(plot.title = element_text(face = "bold", size = 11)))
 }
