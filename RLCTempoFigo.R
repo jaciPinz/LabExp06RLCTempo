@@ -537,73 +537,133 @@ cat("==========================================================\n")
 # 10. VISUALIZZAZIONE CONTOUR E PROFILI (MODELLO RIDOTTO) – TUTTE LE COPPIE
 # ==============================================================================
 
-# Funzione per generare il layout combinato per una data coppia di parametri
-plotPairReduced <- function(grid3d, paramX, paramY, 
-                            profX, profY, 
-                            xlab, ylab, title = NULL) {
+sidePlotsLimit <- 2.5
+
+plotPairReduced <- function(grid3d, paramX, paramY,
+                            profX, profY,
+                            xlab, ylab, title = NULL,
+                            sidePlotsLimit = NULL) {
   
-  # Aggrega la griglia 3D sui due parametri (minimizza sul terzo)
+  # --- Preparazione dati ---
   grid2d <- aggregate(chi2 ~ get(paramX) + get(paramY), data = grid3d, FUN = min)
   names(grid2d)[1:2] <- c("x", "y")
   
   chi2Min2d <- min(grid2d$chi2)
-  contourLevels <- c(chi2Min2d + 0.0001, chi2Min2d + 1, 
-                     chi2Min2d + 2.3, chi2Min2d + 3.8)
+  chi2Max2d <- max(grid2d$chi2)
   
+  # Identificazione coordinate del minimo nella griglia
+  bestXY <- grid2d[which.min(grid2d$chi2), ]
+  
+  # Livelli di confidenza (valori tipici per Δχ²)
+  contourLevels <- c(chi2Min2d + 1,        # tangenza 1D
+                     chi2Min2d + 2.2957,   # 68% CL 2D
+                     chi2Min2d + 5.9915)   # 95% CL 2D
+  
+  # Limiti spaziali per X e Y
   xLim <- range(grid2d$x)
   yLim <- range(grid2d$y)
   
-  # Mappa centrale
+  # Se sidePlotsLimit non è specificato, lo calcoliamo per coprire tutti i livelli di confidenza
+  if (is.null(sidePlotsLimit)) {
+    sidePlotsLimit <- max(contourLevels) - chi2Min2d + 1   # piccolo margine superiore
+  }
+  
+  # --- Mappa centrale ---
   pMap <- ggplot(grid2d, aes(x = x, y = y, z = chi2)) +
-    geom_contour_filled(bins = 100) +
-    geom_contour(breaks = contourLevels, color = "black", alpha = 0.5, linetype = "dotted") +
-    scale_fill_viridis_d(option = "plasma", direction = -1, name = expression(chi^2)) +
-    geom_vline(xintercept = c(profX$lower, profX$upper), linetype = "dashed", color = "gray40") +
-    geom_hline(yintercept = c(profY$lower, profY$upper), linetype = "dashed", color = "gray40") +
+    geom_contour_filled(bins = 200, linewidth = 0, colour = NA) +
+    scale_fill_viridis_d(option = "plasma", direction = -1) +
+    geom_contour(breaks = contourLevels, color = "black",
+                 alpha = 0.5, linetype = "dotted") +
+    geom_point(data = bestXY, aes(x = x, y = y), 
+               color = "black", shape = 16, size = 2.5) +
+    geom_vline(xintercept = c(profX$lower, profX$upper),
+               linetype = "dashed", color = "gray40") +
+    geom_hline(yintercept = c(profY$lower, profY$upper),
+               linetype = "dashed", color = "gray40") +
     coord_cartesian(xlim = xLim, ylim = yLim, expand = FALSE) +
     labs(x = xlab, y = ylab) +
     theme_minimal() +
-    theme(legend.position = "right",
-          panel.grid = element_blank(),
-          plot.margin = margin(0, 0, 0, 0))
+    theme(legend.position = "none",
+          panel.grid     = element_blank(),
+          plot.margin    = margin(0, 0, 0, 0))   # margini nulli per allineamento
   
-  # Profilo laterale sinistro (parametro Y)
+  # --- Colorbar separata ---
+  cbDf <- data.frame(chi2 = seq(chi2Min2d, chi2Max2d, length.out = 500), x = 1)
+  pColorbar <- ggplot(cbDf, aes(x = x, y = chi2, fill = chi2)) +
+    geom_raster(interpolate = TRUE) +
+    scale_fill_viridis_c(option = "plasma", direction = -1) +
+    scale_y_continuous(
+      position = "right",
+      breaks   = pretty(c(chi2Min2d, chi2Max2d), n = 5),
+      labels   = function(v) sprintf("%.2f", v)
+    ) +
+    labs(y = expression(chi^2)) +
+    theme_minimal() +
+    theme(
+      axis.title.x    = element_blank(),
+      axis.text.x     = element_blank(),
+      axis.ticks.x    = element_blank(),
+      axis.title.y    = element_text(size = 9),
+      axis.text.y     = element_text(size = 7),
+      legend.position = "none",
+      panel.grid      = element_blank(),
+      plot.margin     = margin(0, 4, 0, 2)
+    )
+  
+  # --- Profilo laterale sinistro (parametro Y) ---
   pSide <- ggplot(profY$profile, aes(x = paramValue, y = chi2)) +
     geom_line(color = "steelblue", linewidth = 0.9) +
-    geom_vline(xintercept = c(profY$lower, profY$upper), linetype = "dashed", color = "gray40") +
+    geom_vline(xintercept = c(profY$lower, profY$upper),
+               linetype = "dashed", color = "gray40") +
     geom_hline(yintercept = chi2Min2d + 1, linetype = "dotted", color = "red") +
-    coord_flip(xlim = yLim, ylim = range(profY$profile$chi2)) +
+    geom_point(aes(x = bestXY$y, y = chi2Min2d), color = "black", size = 1.5) +
+    coord_flip(xlim = yLim, ylim = c(chi2Min2d, chi2Min2d + sidePlotsLimit), expand = FALSE) +
     labs(x = ylab, y = expression(chi^2)) +
     theme_minimal() +
-    theme(panel.grid.minor = element_blank(),
-          axis.title.y = element_blank(),
-          axis.text.y = element_blank(),
-          axis.ticks.y = element_blank(),
-          plot.margin = margin(0, 0, 0, 0))
+    theme(
+      panel.grid.minor = element_blank(),
+      axis.title.x     = element_blank(),   # nasconde il titolo e gli elementi dell'asse chi²
+      axis.text.x      = element_blank(),
+      axis.ticks.x     = element_blank(),
+      plot.margin      = margin(0, 0, 0, 0) # margine nullo verso la mappa
+    )
   
-  # Profilo inferiore (parametro X)
+  # --- Profilo inferiore (parametro X) ---
   pBottom <- ggplot(profX$profile, aes(x = paramValue, y = chi2)) +
     geom_line(color = "steelblue", linewidth = 0.9) +
-    geom_vline(xintercept = c(profX$lower, profX$upper), linetype = "dashed", color = "gray40") +
+    geom_vline(xintercept = c(profX$lower, profX$upper),
+               linetype = "dashed", color = "gray40") +
     geom_hline(yintercept = chi2Min2d + 1, linetype = "dotted", color = "red") +
-    coord_cartesian(xlim = xLim, ylim = range(profX$profile$chi2)) +
+    geom_point(aes(x = bestXY$x, y = chi2Min2d), color = "black", size = 1.5) +
+    coord_cartesian(xlim = xLim, ylim = c(chi2Min2d, chi2Min2d + sidePlotsLimit), expand = FALSE) +
     labs(x = xlab, y = expression(chi^2)) +
     theme_minimal() +
-    theme(panel.grid.minor = element_blank(),
-          axis.title.x = element_blank(),
-          axis.text.x = element_blank(),
-          axis.ticks.x = element_blank(),
-          plot.margin = margin(0, 0, 0, 0))
+    theme(
+      panel.grid.minor = element_blank(),
+      axis.title.y     = element_blank(),   # nasconde il titolo e gli elementi dell'asse chi²
+      axis.text.y      = element_blank(),
+      axis.ticks.y     = element_blank(),
+      plot.margin      = margin(0, 0, 0, 0) # margine nullo sopra la mappa
+    )
   
+  # Pannello vuoto per il layout
   pEmpty <- ggplot() + theme_void()
   
-  layout <- (pSide | pMap) / (pEmpty | pBottom) +
-    plot_layout(widths = c(1, 4), heights = c(4, 1))
+  # --- Composizione layout ---
+  layout <- pSide + pMap + pColorbar + 
+            pEmpty + pBottom + pEmpty +
+            plot_layout(ncol = 3, 
+                        widths  = c(1, 4, 0.2), 
+                        heights = c(4, 1))
   
+  # Aggiunta titolo opzionale
   if (!is.null(title)) {
-    layout <- layout + plot_annotation(title = title,
-                                       theme = theme(plot.title = element_text(face = "bold", size = 11)))
+    layout <- layout + plot_annotation(
+      title = title,
+      theme = theme(plot.title = element_text(face = "bold", size = 11))
+    )
   }
+  
   return(layout)
 }
 
@@ -657,45 +717,53 @@ chi2Full <- function(par, data, fixPar = NULL, fixNames = NULL) {
   sum(w * (data$volt - yFit)^2)
 }
 
+# --- Profilazione 1D con Warm Start ---
 profile1dFull <- function(paramName, gridValues, data, bestFit) {
   fixNames <- paramName
   freeNames <- setdiff(names(bestFit), fixNames)
-  start <- bestFit[freeNames]
   
   chi2Prof <- numeric(length(gridValues))
+  # Punto di partenza iniziale: il best fit globale
+  current_start <- bestFit[freeNames]
+  
   for (i in seq_along(gridValues)) {
-    fixVal <- gridValues[i]
-    opt <- optim(par = start, fn = chi2Full, data = data,
-                 fixPar = fixVal, fixNames = fixNames,
-                 method = "BFGS", control = list(maxit = 1000, reltol = 1e-8))
+    opt <- optim(par = current_start, fn = chi2Full, data = data,
+                 fixPar = gridValues[i], fixNames = fixNames,
+                 method = "BFGS", control = list(maxit = 1000, reltol = 1e-10))
     chi2Prof[i] <- opt$value
-    start <- opt$par
+    # Warm Start: aggiorna la partenza per il punto successivo della griglia
+    current_start <- opt$par 
   }
-  data.frame(paramValue = gridValues, chi2 = chi2Prof)
+  return(data.frame(paramValue = gridValues, chi2 = chi2Prof))
 }
 
+# --- Profilazione 2D con Warm Start ---
 profile2dFull <- function(paramNames, grid1, grid2, data, bestFit) {
   fixNames <- paramNames
   freeNames <- setdiff(names(bestFit), fixNames)
-  start <- bestFit[freeNames]
   
   ng1 <- length(grid1)
   ng2 <- length(grid2)
   chi2Mat <- matrix(NA, nrow = ng1, ncol = ng2)
   
-  pb <- txtProgressBar(min = 0, max = ng1 * ng2, style = 3)
-  counter <- 0
+  # Partenza iniziale dal best fit globale
+  start_row <- bestFit[freeNames]
+  
+  pb <- txtProgressBar(min = 0, max = ng1, style = 3)
   for (i in seq_along(grid1)) {
+    current_start <- start_row
     for (j in seq_along(grid2)) {
       fixVal <- c(grid1[i], grid2[j])
-      opt <- optim(par = start, fn = chi2Full, data = data,
+      opt <- optim(par = current_start, fn = chi2Full, data = data,
                    fixPar = fixVal, fixNames = fixNames,
-                   method = "BFGS", control = list(maxit = 1000, reltol = 1e-8))
+                   method = "BFGS", control = list(maxit = 1000, reltol = 1e-10))
       chi2Mat[i, j] <- opt$value
-      start <- opt$par
-      counter <- counter + 1
-      setTxtProgressBar(pb, counter)
+      # Aggiorna per il prossimo punto sulla stessa riga
+      current_start <- opt$par
+      # Se siamo al primo punto della riga, salviamolo come partenza per la riga successiva
+      if(j == 1) start_row <- opt$par
     }
+    setTxtProgressBar(pb, i)
   }
   close(pb)
   
@@ -734,7 +802,7 @@ for (pname in paramNames) {
                   length.out = 50)
   dfProf <- profile1dFull(pname, gridVals, data, bestFull)
   chi2min <- min(dfProf$chi2)
-  idx <- which(dfProf$chi2 <= chi2min + 1)
+  idx <- which(dfProf$chi2 <= chi2MinFull + 1)
   lower <- if (length(idx) > 0) dfProf$paramValue[min(idx)] else NA
   upper <- if (length(idx) > 0) dfProf$paramValue[max(idx)] else NA
   
@@ -747,65 +815,117 @@ for (pname in paramNames) {
 # ---------- Funzione per generare layout da matrice 2D e profili ----------
 plotPairFull <- function(mat2D, xGrid, yGrid,
                          profX, profY,
-                         xlab, ylab, title = NULL) {
+                         xlab, ylab,
+                         chi2Ref = NULL,      # non utilizzato direttamente ma mantenuto per compatibilità
+                         title = NULL,
+                         sidePlotsLimit = NULL) {
   
+  # --- Preparazione dati ---
   df2D <- expand.grid(x = xGrid, y = yGrid)
   df2D$chi2 <- as.vector(mat2D)
+  
   chi2Min2d <- min(df2D$chi2, na.rm = TRUE)
-  contourLevels <- c(chi2Min2d + 0.0001, chi2Min2d + 1,
-                     chi2Min2d + 2.3, chi2Min2d + 3.8)
+  chi2Max2d <- max(df2D$chi2, na.rm = TRUE)
+  
+  # Coordinate del minimo globale
+  bestXY <- df2D[which.min(df2D$chi2), ]
+  
+  # Livelli di confidenza
+  contourLevels <- c(chi2Min2d + 1,        # Δχ² = 1 (tangenza profili 1D)
+                     chi2Min2d + 2.2957,   # 68% CL 2D
+                     chi2Min2d + 5.9915)   # 95% CL 2D
   
   xLim <- range(xGrid)
   yLim <- range(yGrid)
   
+  # Gestione dinamica del limite superiore per i profili
+  if (is.null(sidePlotsLimit)) {
+    sidePlotsLimit <- max(contourLevels) - chi2Min2d + 1
+  }
+  
+  # --- Mappa centrale ---
   pMap <- ggplot(df2D, aes(x = x, y = y, z = chi2)) +
-    geom_contour_filled(bins = 100) +
+    geom_contour_filled(bins = 100, linewidth = 0, colour = NA) +
     geom_contour(breaks = contourLevels, color = "black", alpha = 0.5, linetype = "dotted") +
-    scale_fill_viridis_d(option = "plasma", direction = -1, name = expression(chi^2)) +
+    scale_fill_viridis_d(option = "plasma", direction = -1) +
+    geom_point(data = bestXY, aes(x = x, y = y), 
+               color = "black", shape = 16, size = 3, stroke = 1.2) +  # croce bianca
     geom_vline(xintercept = c(profX$lower, profX$upper), linetype = "dashed", color = "gray40") +
     geom_hline(yintercept = c(profY$lower, profY$upper), linetype = "dashed", color = "gray40") +
     coord_cartesian(xlim = xLim, ylim = yLim, expand = FALSE) +
     labs(x = xlab, y = ylab) +
     theme_minimal() +
-    theme(legend.position = "right",
+    theme(legend.position = "none",
           panel.grid = element_blank(),
-          plot.margin = margin(0, 0, 0, 0))
+          plot.margin = margin(0, 0, 0, 0))   # margini nulli per allineamento
   
+  # --- Colorbar separata ---
+  cbDf <- data.frame(chi2 = seq(chi2Min2d, chi2Max2d, length.out = 500), x = 1)
+  pColorbar <- ggplot(cbDf, aes(x = x, y = chi2, fill = chi2)) +
+    geom_raster(interpolate = TRUE) +
+    scale_fill_viridis_c(option = "plasma", direction = -1) +
+    scale_y_continuous(
+      position = "right",
+      breaks   = pretty(c(chi2Min2d, chi2Max2d), n = 5),
+      labels   = function(v) sprintf("%.2f", v)
+    ) +
+    labs(y = expression(chi^2)) +
+    theme_minimal() +
+    theme(
+      axis.title.x = element_blank(), axis.text.x = element_blank(),
+      axis.ticks.x = element_blank(), axis.title.y = element_text(size = 9),
+      axis.text.y = element_text(size = 7), legend.position = "none",
+      panel.grid = element_blank(), plot.margin = margin(0, 4, 0, 2)
+    )
+  
+  # --- Profilo laterale sinistro (parametro Y) ---
   pSide <- ggplot(profY$df, aes(x = paramValue, y = chi2)) +
     geom_line(color = "steelblue", linewidth = 0.9) +
     geom_vline(xintercept = c(profY$lower, profY$upper), linetype = "dashed", color = "gray40") +
     geom_hline(yintercept = chi2Min2d + 1, linetype = "dotted", color = "red") +
-    coord_flip(xlim = yLim, ylim = range(profY$df$chi2)) +
+    geom_point(aes(x = bestXY$y, y = chi2Min2d), color = "red", size = 2) +
+    coord_flip(xlim = yLim, ylim = c(chi2Min2d, chi2Min2d + sidePlotsLimit), expand = FALSE) +
     labs(x = ylab, y = expression(chi^2)) +
     theme_minimal() +
-    theme(panel.grid.minor = element_blank(),
-          axis.title.y = element_blank(),
-          axis.text.y = element_blank(),
-          axis.ticks.y = element_blank(),
-          plot.margin = margin(0, 0, 0, 0))
+    theme(
+      panel.grid.minor = element_blank(),
+      axis.title.x     = element_blank(),   # nasconde titolo e tick dell'asse chi²
+      axis.text.x      = element_blank(),
+      axis.ticks.x     = element_blank(),
+      plot.margin      = margin(0, 0, 0, 0) # margine nullo verso la mappa
+    )
   
+  # --- Profilo inferiore (parametro X) ---
   pBottom <- ggplot(profX$df, aes(x = paramValue, y = chi2)) +
     geom_line(color = "steelblue", linewidth = 0.9) +
     geom_vline(xintercept = c(profX$lower, profX$upper), linetype = "dashed", color = "gray40") +
     geom_hline(yintercept = chi2Min2d + 1, linetype = "dotted", color = "red") +
-    coord_cartesian(xlim = xLim, ylim = range(profX$df$chi2)) +
+    geom_point(aes(x = bestXY$x, y = chi2Min2d), color = "red", size = 2) +
+    coord_cartesian(xlim = xLim, ylim = c(chi2Min2d, chi2Min2d + sidePlotsLimit), expand = FALSE) +
     labs(x = xlab, y = expression(chi^2)) +
     theme_minimal() +
-    theme(panel.grid.minor = element_blank(),
-          axis.title.x = element_blank(),
-          axis.text.x = element_blank(),
-          axis.ticks.x = element_blank(),
-          plot.margin = margin(0, 0, 0, 0))
+    theme(
+      panel.grid.minor = element_blank(),
+      axis.title.y     = element_blank(),   # nasconde titolo e tick dell'asse chi²
+      axis.text.y      = element_blank(),
+      axis.ticks.y     = element_blank(),
+      plot.margin      = margin(0, 0, 0, 0) # margine nullo sopra la mappa
+    )
   
   pEmpty <- ggplot() + theme_void()
   
-  layout <- (pSide | pMap) / (pEmpty | pBottom) +
-    plot_layout(widths = c(1, 4), heights = c(4, 1))
+  # --- Layout finale ---
+  layout <- pSide + pMap + pColorbar + 
+    pEmpty + pBottom + pEmpty +
+    plot_layout(ncol = 3, widths = c(0.6, 4, 0.2), heights = c(4, 1))
   
   if (!is.null(title)) {
-    layout <- layout + plot_annotation(title = title,
-                                       theme = theme(plot.title = element_text(face = "bold", size = 11)))
+    layout <- layout + plot_annotation(
+      title = title,
+      theme = theme(plot.title = element_text(face = "bold", size = 11))
+    )
   }
+  
   return(layout)
 }
 
@@ -845,6 +965,7 @@ for (pair in pairsFull) {
     xGrid = xVals, yGrid = yVals,
     profX = profiles1D[[pX]], profY = profiles1D[[pY]],
     xlab = pair$xlab, ylab = pair$ylab,
+    chi2Ref = chi2MinFull,
     title = pair$title
   )
   
